@@ -1,24 +1,27 @@
 fx_version 'cerulean'
 game 'gta5'
+lua54 'yes'
 
-description 'Pickpocket - Created by NaorNC - Discord.gg/NCHub'
-version '2.0.0'
+description 'Pickpocket - Created by NaorNC - Discord.gg/NCHub - Converted to dlrp_base'
+version '2.2.0'
 author 'NaorNC'
 
 ui_page 'html/index.html'
 
+shared_scripts {
+    '@dlrp_lib/init.lua',
+    '@dlrp_base/modules/lib.lua',
+    'config.lua'
+}
+
 client_scripts {
+    '@dlrp_base/modules/playerdata.lua',
     'client/main.lua',
 }
 
 server_scripts {
+    '@oxmysql/lib/MySQL.lua',
     'server/main.lua'
-}
-
-shared_scripts {
-    '@qb-core/shared/locale.lua',
-    '@es_extended/imports.lua',
-    'config.lua'
 }
 
 files {
@@ -29,4 +32,10 @@ files {
     'html/imgs/*.png'
 }
 
-lua54 'yes'
+dependencies {
+    'dlrp_base',
+    'dlrp_target',
+    'dlrp_mdt',
+    'dlrp_lib',
+    'oxmysql'
+}

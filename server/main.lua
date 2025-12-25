@@ -1,27 +1,10 @@
-local QBCore, ESX = nil, nil
-
-if Config.Framework == 'qb' then
-    QBCore = exports['qb-core']:GetCoreObject()
-elseif Config.Framework == 'esx' then
-    ESX = exports['es_extended']:getSharedObject()
-end
-
 local function GetJobPlayerCount(jobName)
     local count = 0
+    local players = exports.dlrp_base:GetBasePlayers()
     
-    if Config.Framework == 'qb' then
-        for _, v in pairs(QBCore.Functions.GetPlayers()) do
-            local Player = QBCore.Functions.GetPlayer(v)
-            if Player.PlayerData.job.name == jobName and Player.PlayerData.job.onduty then
-                count = count + 1
-            end
-        end
-    elseif Config.Framework == 'esx' then
-        for _, v in pairs(ESX.GetPlayers()) do
-            local xPlayer = ESX.GetPlayerFromId(v)
-            if xPlayer.job.name == jobName and (xPlayer.job.onduty == nil or xPlayer.job.onduty) then
-                count = count + 1
-            end
+    for _, player in pairs(players) do
+        if player.PlayerData.job.name == jobName and player.PlayerData.job.onduty then
+            count = count + 1
         end
     end
     
@@ -29,51 +12,41 @@ local function GetJobPlayerCount(jobName)
 end
 
 local function GetPlayer(source)
-    if Config.Framework == 'qb' then
-        return QBCore.Functions.GetPlayer(source)
-    elseif Config.Framework == 'esx' then
-        return ESX.GetPlayerFromId(source)
-    end
+    return exports.dlrp_base:GetPlayer(source)
 end
 
 local function AddPlayerMoney(player, amount)
-    if Config.Framework == 'qb' then
+    if exports.ox_inventory then
+        exports.ox_inventory:AddItem(player.PlayerData.source, 'money', amount)
+    else
         player.Functions.AddMoney('cash', amount, 'pickpocket')
-    elseif Config.Framework == 'esx' then
-        player.addMoney(amount)
     end
 end
 
 local function AddPlayerItem(player, item, amount)
-    if Config.Framework == 'qb' then
+    if exports.ox_inventory then
+        exports.ox_inventory:AddItem(player.PlayerData.source, item, amount)
+    else
         player.Functions.AddItem(item, amount)
-    elseif Config.Framework == 'esx' then
-        player.addInventoryItem(item, amount)
-    end
-end
-
-local function SendItemBoxNotification(source, item, type, amount)
-    if Config.Framework == 'qb' then
-        TriggerClientEvent('inventory:client:ItemBox', source, QBCore.Shared.Items[item], type, amount)
     end
 end
 
 local function SendNotification(source, message, notifyType)
-    if Config.Framework == 'qb' then
-        TriggerClientEvent('QBCore:Notify', source, message, notifyType)
-    elseif Config.Framework == 'esx' then
-        TriggerClientEvent('esx:showNotification', source, message)
-    end
+    TriggerClientEvent('ox_lib:notify', source, {
+        title = 'Pickpocket',
+        description = message,
+        type = notifyType or 'info'
+    })
 end
 
-RegisterNetEvent('nc-pickpocket:server:CheckPoliceCount', function()
+RegisterNetEvent('dlrp_pickpocket:server:CheckPoliceCount', function()
     local src = source
     local policeCount = GetJobPlayerCount("police")
     local canContinue = policeCount >= Config.RequiredPolice
-    TriggerClientEvent('nc-pickpocket:client:ContinuePickpocket', src, canContinue)
+    TriggerClientEvent('dlrp_pickpocket:client:ContinuePickpocket', src, canContinue)
 end)
 
-RegisterNetEvent('nc-pickpocket:server:AddCollectedItems', function(collectedIndices, originalItems)
+RegisterNetEvent('dlrp_pickpocket:server:AddCollectedItems', function(collectedIndices, originalItems)
     local src = source
     local Player = GetPlayer(src)
     
@@ -83,45 +56,53 @@ RegisterNetEvent('nc-pickpocket:server:AddCollectedItems', function(collectedInd
         if originalItems and originalItems[index+1] then
             local item = originalItems[index+1]
             
-            if item.name == 'cash' then
+            if item.name == 'money' then
                 AddPlayerMoney(Player, item.amount)
                 SendNotification(src, "You stole $" .. item.amount, "success")
             else
                 AddPlayerItem(Player, item.name, item.amount)
-                if Config.Framework == 'qb' then
-                    SendItemBoxNotification(src, item.name, 'add', item.amount)
-                end
             end
         end
     end
 end)
 
-RegisterNetEvent('nc-pickpocket:server:EmoteMessage', function(coords, message)
+RegisterNetEvent('dlrp_pickpocket:server:SendDispatch', function(coords, streetAndZone)
     local src = source
-    TriggerClientEvent('nc-pickpocket:EmoteDisplay', -1, src, message, coords)
+    
+    -- Create dispatch data structure for dlrp_mdt
+    local dispatchData = {
+        message = 'Pickpocket in Progress',
+        codeName = 'pickpocket',
+        code = '10-31',
+        icon = 'fas fa-hand',
+        priority = 2,
+        coords = coords,
+        street = streetAndZone or 'Unknown',
+        alertTime = nil,
+        jobs = { 'leo' },
+        alert = {
+            radius = 0,
+            sprite = 225,
+            color = 1,
+            scale = 0.6,
+            length = 2,
+            sound = 'Lose_1st',
+            sound2 = 'GTAO_FM_Events_Soundset',
+            offset = false,
+            flash = false
+        }
+    }
+    
+    -- Use dlrp_mdt's createCall export (performant and doesn't iterate players)
+    exports.dlrp_mdt:createCall(dispatchData)
 end)
 
-RegisterNetEvent('nc-pickpocket:server:NotifyPolice', function(coords)
-    if Config.Framework == 'qb' then
-        for _, v in pairs(QBCore.Functions.GetPlayers()) do
-            local Player = QBCore.Functions.GetPlayer(v)
-            if Player.PlayerData.job.name == "police" and Player.PlayerData.job.onduty then
-                TriggerClientEvent('QBCore:Notify', v, "Someone reported a pickpocket", "police", 5000)
-                TriggerClientEvent('nc-pickpocket:client:PoliceAlert', v, coords)
-            end
-        end
-    elseif Config.Framework == 'esx' then
-        for _, v in pairs(ESX.GetPlayers()) do
-            local xPlayer = ESX.GetPlayerFromId(v)
-            if xPlayer.job.name == "police" and (xPlayer.job.onduty == nil or xPlayer.job.onduty) then
-                TriggerClientEvent('esx:showNotification', v, "Someone reported a pickpocket")
-                TriggerClientEvent('nc-pickpocket:client:PoliceAlert', v, coords)
-            end
-        end
-    end
+RegisterNetEvent('dlrp_pickpocket:server:EmoteMessage', function(coords, message)
+    local src = source
+    TriggerClientEvent('dlrp_pickpocket:EmoteDisplay', -1, src, message, coords)
 end)
 
-RegisterNetEvent('nc-pickpocket:EmoteDisplay', function(playerId, message, coords)
+RegisterNetEvent('dlrp_pickpocket:EmoteDisplay', function(playerId, message, coords)
     local src = source
     local srcCoords = GetEntityCoords(GetPlayerPed(src))
     

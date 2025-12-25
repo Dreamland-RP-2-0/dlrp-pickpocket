@@ -1,11 +1,3 @@
-local QBCore, ESX = nil, nil
-
-if Config.Framework == 'qb' then
-    QBCore = exports['qb-core']:GetCoreObject()
-elseif Config.Framework == 'esx' then
-    ESX = exports['es_extended']:getSharedObject()
-end
-
 local pickpocketingInProgress = false
 local cooldownNPCs = {}
 local currentPickpocketItems = {}
@@ -14,11 +6,11 @@ local callingPoliceNPC = nil
 local npcOriginalHeadings = {}
 
 local function ShowNotification(message, type)
-    if Config.Framework == 'qb' then
-        QBCore.Functions.Notify(message, type)
-    elseif Config.Framework == 'esx' then
-        ESX.ShowNotification(message)
-    end
+    lib.notify({
+        title = 'Pickpocket',
+        description = message,
+        type = type or 'info'
+    })
 end
 
 local function ResetPickpocketState()
@@ -117,10 +109,7 @@ local function MakeNPCLookNatural(npcPed, enable)
                     local walkStyles = {"move_m@casual@a", "move_m@casual@b", "move_m@casual@c", "move_m@casual@d"}
                     local randomStyle = walkStyles[math.random(#walkStyles)]
                     
-                    RequestAnimSet(randomStyle)
-                    while not HasAnimSetLoaded(randomStyle) do
-                        Wait(10)
-                    end
+                    lib.requestAnimSet(randomStyle)
                     
                     SetPedMovementClipset(npcPed, randomStyle, 0.25)
                     
@@ -186,7 +175,7 @@ local function GetRandomPickpocketItems()
         for _, item in ipairs(Config.StealableItems) do
             if math.random(1, 100) <= item.chance then
                 local amount = math.random(item.min, item.max)
-                local displayValue = item.item == 'cash' 
+                local displayValue = item.item == 'money' 
                     and (item.value .. amount) 
                     or (item.value .. item.label)
                 
@@ -216,7 +205,7 @@ function HandleNPCCallingPolice(npcPed)
     
     callingPoliceNPC = npcPed
     
-    TriggerServerEvent('nc-pickpocket:server:EmoteMessage', npcCoords, 'Someone is calling the police')
+    TriggerServerEvent('dlrp_pickpocket:server:EmoteMessage', npcCoords, 'Someone is calling the police')
     
     ShowNotification(Config.Notifications.NPCCalling, "error")
     
@@ -259,28 +248,13 @@ function HandleNPCCallingPolice(npcPed)
     Wait(callTime)
     callThreadActive = false
     
-    if Config.UseQBDispatch then
-        if exports['qb-dispatch'] then
-            TriggerServerEvent('qb-dispatch:server:SendAlert', {
-                name = 'Pickpocket',
-                coords = npcCoords,
-                description = 'Pickpocket attempt reported',
-                dispatchCode = '10-31',
-                priority = 2,
-                blip = {
-                    sprite = 225,
-                    scale = 1.0,
-                    colour = 1,
-                    flashes = true,
-                    text = 'Pickpocket',
-                    time = 60,
-                    radius = 100.0
-                }
-            })
-        else
-            TriggerServerEvent('nc-pickpocket:server:NotifyPolice', npcCoords)
-        end
-    end
+    -- Get street and zone info for dispatch
+    local zone = GetLabelText(GetNameOfZone(npcCoords.x, npcCoords.y, npcCoords.z))
+    local street = GetStreetNameFromHashKey(GetStreetNameAtCoord(npcCoords.x, npcCoords.y, npcCoords.z))
+    local streetAndZone = ('%s, %s'):format(street, zone)
+    
+    -- Send dispatch alert to dlrp_mdt
+    TriggerServerEvent('dlrp_pickpocket:server:SendDispatch', npcCoords, streetAndZone)
     
     if DoesEntityExist(npcPed) then
         if math.random() > 0.5 then
@@ -380,7 +354,7 @@ local function StartPickpocketing(npcPed)
     end
     
     continuePickpocketing = false
-    TriggerServerEvent('nc-pickpocket:server:CheckPoliceCount')
+    TriggerServerEvent('dlrp_pickpocket:server:CheckPoliceCount')
     
     local timeout = 0
     while not continuePickpocketing and timeout < 50 do
@@ -432,8 +406,7 @@ local function StartPickpocketing(npcPed)
     AddNPCToCooldown(npcNetId)
 end
 
-RegisterNetEvent('nc-pickpocket:client:ContinuePickpocket')
-AddEventHandler('nc-pickpocket:client:ContinuePickpocket', function(canContinue)
+RegisterNetEvent('dlrp_pickpocket:client:ContinuePickpocket', function(canContinue)
     continuePickpocketing = canContinue
 end)
 
@@ -472,7 +445,7 @@ RegisterNUICallback('minigameComplete', function(data, cb)
         if success and successRate >= Config.SuccessPercentage and #collectedItems > 0 then
             ShowNotification(Config.Notifications.SuccessfulPickpocket, "success")
             
-            TriggerServerEvent('nc-pickpocket:server:AddCollectedItems', collectedItems, currentPickpocketItems)
+            TriggerServerEvent('dlrp_pickpocket:server:AddCollectedItems', collectedItems, currentPickpocketItems)
             
             if math.random(1, 100) <= Config.DiscoveryChance then
                 Wait(math.random(100, 300))
@@ -544,55 +517,30 @@ AddEventHandler('onResourceStop', function(resourceName)
     callingPoliceNPC = nil
 end)
 
+-- Initialize target system using dlrp_target (which is compatible with ox_target)
 local function InitializeTarget()
-    if Config.Framework == 'qb' and Config.UseQBTarget then
-        exports['qb-target']:AddGlobalPed({
-            options = {
-                {
-                    icon = 'fas fa-hand-paper',
-                    label = 'Pickpocket',
-                    action = function(entity)
-                        if not IsPedAPlayer(entity) and not IsPedDeadOrDying(entity, 1) and not IsNPCBlacklisted(entity) then
-                            StartPickpocketing(entity)
-                        end
-                    end,
-                    canInteract = function(entity)
-                        return not IsPedAPlayer(entity) and not IsPedDeadOrDying(entity, 1) and not IsPedInAnyVehicle(entity, false) and not IsNPCBlacklisted(entity)
-                    end,
-                },
-            },
-            distance = 1.5,
-        })
-    elseif Config.UseOxTarget then
-        exports.ox_target:addGlobalPed({
-            {
-                name = 'pickpocket_npc',
-                icon = 'fas fa-hand-paper',
-                label = 'Pickpocket',
-                onSelect = function(data)
-                    if data.entity and not IsPedAPlayer(data.entity) and not IsPedDeadOrDying(data.entity, 1) and not IsNPCBlacklisted(data.entity) then
-                        StartPickpocketing(data.entity)
-                    end
-                end,
-                canInteract = function(entity)
-                    return not IsPedAPlayer(entity) and not IsPedDeadOrDying(entity, 1) and not IsPedInAnyVehicle(entity, false) and not IsNPCBlacklisted(entity)
-                end,
-                distance = 1.5
-            }
-        })
-    end
+    exports.dlrp_target:addGlobalPed({
+        {
+            name = 'pickpocket_npc',
+            icon = 'fas fa-hand-paper',
+            label = 'Pickpocket',
+            onSelect = function(data)
+                if data.entity and not IsPedAPlayer(data.entity) and not IsPedDeadOrDying(data.entity, 1) and not IsNPCBlacklisted(data.entity) then
+                    StartPickpocketing(data.entity)
+                end
+            end,
+            canInteract = function(entity)
+                return not IsPedAPlayer(entity) and not IsPedDeadOrDying(entity, 1) and not IsPedInAnyVehicle(entity, false) and not IsNPCBlacklisted(entity)
+            end,
+            distance = 1.5
+        }
+    })
 end
 
-if Config.Framework == 'qb' then
-    RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-        InitializeTarget()
-    end)
-elseif Config.Framework == 'esx' then
-    RegisterNetEvent('esx:playerLoaded')
-    AddEventHandler('esx:playerLoaded', function()
-        InitializeTarget()
-    end)
-end
+-- Initialize when player data is loaded
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    InitializeTarget()
+end)
 
 AddEventHandler('onResourceStart', function(resourceName)
     if GetCurrentResourceName() == resourceName then
@@ -600,8 +548,7 @@ AddEventHandler('onResourceStart', function(resourceName)
     end
 end)
 
-RegisterNetEvent('nc-pickpocket:EmoteDisplay')
-AddEventHandler('nc-pickpocket:EmoteDisplay', function(playerId, message, coords)
+RegisterNetEvent('dlrp_pickpocket:EmoteDisplay', function(playerId, message, coords)
     local playerCoords = GetEntityCoords(PlayerPedId())
     
     if #(playerCoords - coords) < 10.0 then
@@ -609,26 +556,5 @@ AddEventHandler('nc-pickpocket:EmoteDisplay', function(playerId, message, coords
             template = '<div style="padding: 0.5vh; margin: 0.5vh; background-color: rgba(99, 99, 99, 0.75); border-radius: 3px;"><i class="fas fa-user"></i> {0}: {1}</div>',
             args = {"NPC", message}
         })
-    end
-end)
-
-RegisterNetEvent('nc-pickpocket:client:PoliceAlert', function(coords)
-    local alpha = 250
-    local blip = AddBlipForRadius(coords.x, coords.y, coords.z, 50.0)
-
-    SetBlipHighDetail(blip, true)
-    SetBlipColour(blip, 1)
-    SetBlipAlpha(blip, alpha)
-    SetBlipAsShortRange(blip, true)
-
-    while alpha ~= 0 do
-        Wait(Config.BlipTimeout)
-        alpha = alpha - 1
-        SetBlipAlpha(blip, alpha)
-
-        if alpha == 0 then
-            RemoveBlip(blip)
-            return
-        end
     end
 end)
