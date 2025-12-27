@@ -4,6 +4,9 @@ local currentPickpocketItems = {}
 local isMinigameReset = true
 local callingPoliceNPC = nil
 local npcOriginalHeadings = {}
+local pickpocketTimeout = nil
+local currentPickpocketNPC = nil
+local safetyMonitorActive = false
 
 local function ShowNotification(message, type)
     lib.notify({
@@ -17,8 +20,16 @@ local function ResetPickpocketState()
     pickpocketingInProgress = false
     currentPickpocketItems = {}
     SetNuiFocus(false, false)
-    ClearPedTasks(PlayerPedId())
+    ClearPedTasksImmediately(PlayerPedId())
     isMinigameReset = true
+    
+    -- Clear timeout if it exists
+    if pickpocketTimeout then
+        pickpocketTimeout = nil
+    end
+    
+    currentPickpocketNPC = nil
+    safetyMonitorActive = false
 end
 
 local function IsNPCBlacklisted(npcPed)
@@ -378,6 +389,8 @@ local function StartPickpocketing(npcPed)
     local playerPed = PlayerPedId()
     TaskStartScenarioInPlace(playerPed, "PROP_HUMAN_BUM_BIN", 0, true)
     
+    currentPickpocketNPC = npcPed
+    
     local minigameItems = {}
     for _, item in ipairs(potentialItems) do
         table.insert(minigameItems, {
@@ -404,6 +417,67 @@ local function StartPickpocketing(npcPed)
     })
     
     AddNPCToCooldown(npcNetId)
+    
+    -- Start safety monitor thread
+    safetyMonitorActive = true
+    CreateThread(function()
+        while safetyMonitorActive and pickpocketingInProgress do
+            Wait(2000) -- Check every 2 seconds
+            
+            local playerPed = PlayerPedId()
+            
+            -- If player is dead or in a vehicle while pickpocketing, reset state
+            if IsPedDeadOrDying(playerPed, 1) or IsPedInAnyVehicle(playerPed, false) then
+                print("[Pickpocket] Safety monitor detected player death/vehicle - resetting")
+                ResetPickpocketState()
+                
+                SendNUIMessage({
+                    action = "stopMinigame"
+                })
+                
+                if currentPickpocketNPC and DoesEntityExist(currentPickpocketNPC) then
+                    MakeNPCLookNatural(currentPickpocketNPC, false)
+                end
+                break
+            end
+            
+            -- Check if pickpocketing has been in progress for too long (over 65 seconds)
+            -- The timeout should handle this, but this is an extra safety check
+            if not pickpocketTimeout then
+                -- If pickpocketing is in progress but no timeout exists, something went wrong
+                print("[Pickpocket] Safety monitor detected missing timeout - resetting")
+                ResetPickpocketState()
+                
+                SendNUIMessage({
+                    action = "stopMinigame"
+                })
+                
+                if currentPickpocketNPC and DoesEntityExist(currentPickpocketNPC) then
+                    MakeNPCLookNatural(currentPickpocketNPC, false)
+                end
+                break
+            end
+        end
+    end)
+    
+    -- Safety timeout: automatically reset after 60 seconds if minigame doesn't complete
+    pickpocketTimeout = SetTimeout(60000, function()
+        if pickpocketingInProgress then
+            print("[Pickpocket] Safety timeout triggered - resetting pickpocket state")
+            ResetPickpocketState()
+            
+            SendNUIMessage({
+                action = "stopMinigame"
+            })
+            
+            if currentPickpocketNPC and DoesEntityExist(currentPickpocketNPC) then
+                MakeNPCLookNatural(currentPickpocketNPC, false)
+            end
+            
+            ShowNotification("Pickpocket attempt timed out", "error")
+        end
+        pickpocketTimeout = nil
+    end)
 end
 
 RegisterNetEvent('dlrp_pickpocket:client:ContinuePickpocket', function(canContinue)
@@ -424,7 +498,14 @@ RegisterNUICallback('minigameComplete', function(data, cb)
     local collectedItems = data.collectedItems or {} 
     
     local playerPed = PlayerPedId()
+    
+    -- Always clear animation first, regardless of NPC state
     ClearPedTasksImmediately(playerPed)
+    
+    -- Clear timeout
+    if pickpocketTimeout then
+        pickpocketTimeout = nil
+    end
     
     pickpocketingInProgress = false
     SetNuiFocus(false, false)
@@ -433,9 +514,10 @@ RegisterNUICallback('minigameComplete', function(data, cb)
         action = "stopMinigame"
     })
     
-    local npcPed = IsNearValidNPC()
+    -- Use stored NPC reference or try to find nearby NPC
+    local npcPed = currentPickpocketNPC or IsNearValidNPC()
     
-    if npcPed then
+    if npcPed and DoesEntityExist(npcPed) then
         SetTimeout(300, function()
             if DoesEntityExist(npcPed) then
                 MakeNPCLookNatural(npcPed, false)
@@ -472,12 +554,19 @@ RegisterNUICallback('minigameComplete', function(data, cb)
     
     currentPickpocketItems = {}
     isMinigameReset = true
+    currentPickpocketNPC = nil
     
     cb({})
 end)
 
 RegisterNUICallback('closeMinigame', function(data, cb)
-    ClearPedTasksImmediately(PlayerPedId())
+    local playerPed = PlayerPedId()
+    ClearPedTasksImmediately(playerPed)
+    
+    -- Clear timeout
+    if pickpocketTimeout then
+        pickpocketTimeout = nil
+    end
     
     ResetPickpocketState()
     
@@ -485,10 +574,13 @@ RegisterNUICallback('closeMinigame', function(data, cb)
         action = "stopMinigame"
     })
     
-    local npcPed = IsNearValidNPC()
-    if npcPed then
+    -- Use stored NPC reference or try to find nearby NPC
+    local npcPed = currentPickpocketNPC or IsNearValidNPC()
+    if npcPed and DoesEntityExist(npcPed) then
         MakeNPCLookNatural(npcPed, false)
     end
+    
+    currentPickpocketNPC = nil
     
     if data.emptyPockets then
         ShowNotification(Config.Notifications.NoItems, "error")
@@ -505,6 +597,19 @@ end)
 AddEventHandler('onResourceStop', function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
     
+    -- Clear player animation immediately
+    local playerPed = PlayerPedId()
+    ClearPedTasksImmediately(playerPed)
+    
+    -- Reset pickpocket state
+    ResetPickpocketState()
+    SetNuiFocus(false, false)
+    
+    SendNUIMessage({
+        action = "stopMinigame"
+    })
+    
+    -- Clean up NPCs
     for npcPed, _ in pairs(npcOriginalHeadings) do
         if DoesEntityExist(npcPed) then
             SetEntityInvincible(npcPed, false)
@@ -515,6 +620,32 @@ AddEventHandler('onResourceStop', function(resourceName)
     
     npcOriginalHeadings = {}
     callingPoliceNPC = nil
+    currentPickpocketNPC = nil
+end)
+
+-- Lightweight safety check: only checks for stuck animations when not actively pickpocketing
+-- This catches edge cases where animation gets stuck but pickpocketingInProgress is false
+CreateThread(function()
+    while true do
+        Wait(10000) -- Check every 10 seconds (less frequent since it's a fallback)
+        
+        -- Only check if we're not actively pickpocketing (active monitoring handles that case)
+        if not pickpocketingInProgress then
+            local playerPed = PlayerPedId()
+            
+            -- Check if player is in pickpocket scenario but pickpocketing is not in progress
+            -- This indicates a stuck state from a previous session or failed cleanup
+            if IsPedUsingScenario(playerPed, "PROP_HUMAN_BUM_BIN") then
+                print("[Pickpocket] Lightweight monitor detected stuck animation - clearing")
+                ClearPedTasksImmediately(playerPed)
+                ResetPickpocketState()
+                
+                SendNUIMessage({
+                    action = "stopMinigame"
+                })
+            end
+        end
+    end
 end)
 
 -- Initialize target system using dlrp_target (which is compatible with ox_target)
